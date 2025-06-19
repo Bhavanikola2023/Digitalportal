@@ -1,12 +1,10 @@
 import WindowManager from './WindowManager.js'
 
-
-
 const t = THREE;
 let camera, scene, renderer, world;
 let near, far;
 let pixR = window.devicePixelRatio ? window.devicePixelRatio : 1;
-let cubes = [];
+let particleSystems = [];
 let sceneOffsetTarget = {x: 0, y: 0};
 let sceneOffset = {x: 0, y: 0};
 
@@ -27,6 +25,109 @@ function getTime ()
 	return (new Date().getTime() - today) / 1000.0;
 }
 
+// Create particle system for cosmic swirl effect
+function createParticleSystem(windowIndex, centerX, centerY) {
+    const particleCount = 2000;
+    const geometry = new t.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const velocities = new Float32Array(particleCount * 3);
+    const ages = new Float32Array(particleCount);
+    const opacities = new Float32Array(particleCount);
+    
+    // Initialize particles in spiral pattern
+    for (let i = 0; i < particleCount; i++) {
+        const angle = (i / particleCount) * Math.PI * 8; // Multiple spirals
+        const radius = (i / particleCount) * 200;
+        const spiralX = Math.cos(angle) * radius;
+        const spiralY = Math.sin(angle) * radius;
+        
+        positions[i * 3] = centerX + spiralX;
+        positions[i * 3 + 1] = centerY + spiralY;
+        positions[i * 3 + 2] = 0;
+        
+        // Set initial velocities for flowing motion
+        velocities[i * 3] = Math.cos(angle + Math.PI/2) * 2;
+        velocities[i * 3 + 1] = Math.sin(angle + Math.PI/2) * 2;
+        velocities[i * 3 + 2] = 0;
+        
+        ages[i] = Math.random();
+        opacities[i] = Math.random() * 0.8 + 0.2;
+    }
+    
+    geometry.setAttribute('position', new t.BufferAttribute(positions, 3));
+    geometry.setAttribute('velocity', new t.BufferAttribute(velocities, 3));
+    geometry.setAttribute('age', new t.BufferAttribute(ages, 1));
+    geometry.setAttribute('opacity', new t.BufferAttribute(opacities, 1));
+    
+    // Create glowing material
+    const material = new t.ShaderMaterial({
+        uniforms: {
+            time: { value: 0 },
+            windowIndex: { value: windowIndex }
+        },
+        vertexShader: `
+            attribute float age;
+            attribute float opacity;
+            attribute vec3 velocity;
+            uniform float time;
+            uniform float windowIndex;
+            varying float vOpacity;
+            varying float vAge;
+            
+            void main() {
+                vOpacity = opacity;
+                vAge = age;
+                
+                vec3 pos = position;
+                
+                // Add spiral motion
+                float spiralTime = time * 0.5 + windowIndex * 0.3;
+                float radius = length(pos.xy);
+                float angle = atan(pos.y, pos.x) + spiralTime * 0.002 * (1.0 + radius * 0.01);
+                
+                pos.x = cos(angle) * radius;
+                pos.y = sin(angle) * radius;
+                
+                // Add flowing motion
+                pos += velocity * sin(time * 0.001 + age * 6.28) * 10.0;
+                
+                // Add some vertical drift
+                pos.y += sin(time * 0.0005 + age * 3.14) * 20.0;
+                
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+                gl_PointSize = 2.0 + sin(time * 0.01 + age * 10.0) * 1.0;
+            }
+        `,
+        fragmentShader: `
+            varying float vOpacity;
+            varying float vAge;
+            uniform float time;
+            
+            void main() {
+                // Create circular particle
+                vec2 center = gl_PointCoord - 0.5;
+                float dist = length(center);
+                if (dist > 0.5) discard;
+                
+                // Create glow effect
+                float alpha = (1.0 - dist * 2.0) * vOpacity;
+                alpha *= 0.6 + 0.4 * sin(time * 0.01 + vAge * 6.28);
+                
+                // Green cosmic color with some variation
+                vec3 color = vec3(0.1, 0.8 + sin(vAge * 3.14) * 0.2, 0.3);
+                color *= 1.5; // Brighten for glow effect
+                
+                gl_FragColor = vec4(color, alpha);
+            }
+        `,
+        transparent: true,
+        blending: t.AdditiveBlending,
+        depthWrite: false
+    });
+    
+    const points = new t.Points(geometry, material);
+    return points;
+}
 
 if (new URLSearchParams(window.location.search).get("clear"))
 {
@@ -105,35 +206,30 @@ else
 
 	function windowsUpdated ()
 	{
-		updateNumberOfCubes();
+		updateParticleSystems();
 	}
 
-	function updateNumberOfCubes ()
+	function updateParticleSystems ()
 	{
 		let wins = windowManager.getWindows();
 
-		// remove all cubes
-		cubes.forEach((c) => {
-			world.remove(c);
+		// remove all particle systems
+		particleSystems.forEach((ps) => {
+			world.remove(ps);
 		})
 
-		cubes = [];
+		particleSystems = [];
 
-		// add new cubes based on the current window setup
+		// add new particle systems based on the current window setup
 		for (let i = 0; i < wins.length; i++)
 		{
 			let win = wins[i];
-
-			let c = new t.Color();
-			c.setHSL(i * .1, 1.0, .5);
-
-			let s = 100 + i * 50;
-			let cube = new t.Mesh(new t.BoxGeometry(s, s, s), new t.MeshBasicMaterial({color: c , wireframe: true}));
-			cube.position.x = win.shape.x + (win.shape.w * .5);
-			cube.position.y = win.shape.y + (win.shape.h * .5);
-
-			world.add(cube);
-			cubes.push(cube);
+			let centerX = win.shape.x + (win.shape.w * .5);
+			let centerY = win.shape.y + (win.shape.h * .5);
+			
+			let particleSystem = createParticleSystem(i, centerX, centerY);
+			world.add(particleSystem);
+			particleSystems.push(particleSystem);
 		}
 	}
 
@@ -144,13 +240,11 @@ else
 		if (!easing) sceneOffset = sceneOffsetTarget;
 	}
 
-
 	function render ()
 	{
 		let t = getTime();
 
 		windowManager.update();
-
 
 		// calculate the new position based on the delta between current offset and new offset times a falloff value (to create the nice smoothing effect)
 		let falloff = .05;
@@ -163,26 +257,24 @@ else
 
 		let wins = windowManager.getWindows();
 
-
-		// loop through all our cubes and update their positions based on current window positions
-		for (let i = 0; i < cubes.length; i++)
+		// loop through all our particle systems and update their positions and time
+		for (let i = 0; i < particleSystems.length; i++)
 		{
-			let cube = cubes[i];
+			let particleSystem = particleSystems[i];
 			let win = wins[i];
-			let _t = t;// + i * .2;
 
-			let posTarget = {x: win.shape.x + (win.shape.w * .5), y: win.shape.y + (win.shape.h * .5)}
+			let posTarget = {x: win.shape.x + (win.shape.w * .5), y: win.shape.y + (win.shape.h * .5)};
 
-			cube.position.x = cube.position.x + (posTarget.x - cube.position.x) * falloff;
-			cube.position.y = cube.position.y + (posTarget.y - cube.position.y) * falloff;
-			cube.rotation.x = _t * .5;
-			cube.rotation.y = _t * .3;
-		};
+			particleSystem.position.x = particleSystem.position.x + (posTarget.x - particleSystem.position.x) * falloff;
+			particleSystem.position.y = particleSystem.position.y + (posTarget.y - particleSystem.position.y) * falloff;
+			
+			// Update shader time uniform
+			particleSystem.material.uniforms.time.value = t;
+		}
 
 		renderer.render(scene, camera);
 		requestAnimationFrame(render);
 	}
-
 
 	// resize the renderer to fit the window size
 	function resize ()
